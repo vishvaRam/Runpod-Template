@@ -1,0 +1,104 @@
+# Use your specified NVIDIA CUDA base image with Python 3.10 and uv
+FROM vishva123/nvdia-cuda-12.8-cudnn-ubuntu24.04-py-3.10-uv
+
+# Set the working directory inside the container
+WORKDIR /workspace
+
+# --- CRITICAL FIX: Set the PATH environment variable ---
+# This ensures that Python, pip, and other executables installed by your base image
+# or uv are correctly found by the shell, especially for SSH sessions.
+# We include /usr/local/bin where uv is installed and potentially other Python executables.
+ENV PATH="/usr/local/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+# Install common development tools and dependencies
+# Using 'apt-get clean' and 'rm -rf /var/lib/apt/lists/*' for smaller image size
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    git \
+    openssh-server \
+    nginx \
+    curl \
+    vim \
+    nano \
+    wget \
+    build-essential \
+    tmux \
+    htop \
+    tree \
+    unzip \
+    zip \
+    rsync && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Generate SSH host keys if they don't exist
+# This is crucial for SSH to start without errors
+RUN ssh-keygen -A
+
+RUN uv pip install --upgrade uv pip --system
+
+RUN uv pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 --system
+
+# Install JupyterLab, widgets, and other common Python packages using uv pip
+# Consolidating uv pip installs to optimize Docker layers
+RUN uv pip install \
+    jupyterlab \
+    notebook \
+    ipywidgets \
+    ipykernel \
+    "jupyterlab-widgets>=1.0.0" \
+    numpy \
+    scipy \
+    pandas \
+    scikit-learn \
+    matplotlib \
+    tqdm \
+    Pillow \
+    opencv-python \
+    transformers \
+    datasets \
+    accelerate \
+    tensorboard \
+    evaluate \
+    rich \
+    cryptography \
+    bitsandbytes \
+    hf_transfer  --system && \
+    jupyter labextension enable @jupyter-widgets/jupyterlab-manager
+# Install flash-attn separately due to MAX_JOBS flag and potential build complexity
+# We explicitly specify python3.10 because uv might use a virtual environment by default
+# or you might want to ensure the system-wide Python 3.10 is used for this specific build.
+# The --system flag for uv pip ensures installation into the system-wide site-packages.
+# RUN MAX_JOBS=4 uv pip install flash-attn --no-build-isolation --system
+
+# Configure SSH. This is essential for SSH access.
+# Set a default password for root (CHANGE 'runpod' to a strong password or use SSH keys for production)
+RUN mkdir -p /var/run/sshd && \
+    echo 'root:runpod' | chpasswd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/UsePAM yes/UsePAM no/' /etc/ssh/sshd_config
+
+# --- NEW ADDITION: Ensure PATH is set for interactive SSH sessions ---
+# This appends the /usr/local/bin directory (where uv is) to the PATH in .bashrc for the root user.
+# It ensures that python, uv, and other executables are found when you SSH in.
+RUN echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
+
+# Expose ports as per RunPod's readme
+EXPOSE 8888
+EXPOSE 22
+
+# --- NGINX Configuration (Optional, uncomment if needed) ---
+# If you enable NGINX, ensure you have a 'default_nginx.conf' file
+# in the same directory as your Dockerfile.
+#
+# COPY default_nginx.conf /etc/nginx/sites-available/default
+# RUN ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
+
+# Copy and set up the entrypoint script
+# Ensure entrypoint.sh is in the same directory as your Dockerfile
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Use the entrypoint script to manage services
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
